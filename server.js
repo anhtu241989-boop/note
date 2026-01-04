@@ -482,7 +482,10 @@ app.post('/api/import', async (req, res) => {
 });
 
 // Serve frontend for all other routes (SPA support)
-app.use((req, res) => {
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return next(); // cho API đi tiếp
+  }
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
