@@ -1,0 +1,14 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* =========================
+   GLOBAL RESET + NO SCROLL
+   ========================= */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden; /* ❌ chặn cuộn trang */
+}
