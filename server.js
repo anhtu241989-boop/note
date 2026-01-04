@@ -17,7 +17,7 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static('dist'));
+app.use(express.static(path.join(__dirname, 'dist')));
 
 // Ensure data directory exists
 async function initializeDataDir() {
