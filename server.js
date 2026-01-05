@@ -27,14 +27,12 @@ async function initializeDataDir() {
     await fs.mkdir(DATA_DIR, { recursive: true });
   }
 
-  // Initialize notes file if not exists
   try {
     await fs.access(NOTES_FILE);
   } catch {
     await fs.writeFile(NOTES_FILE, JSON.stringify([], null, 2));
   }
 
-  // Initialize sessions file if not exists
   try {
     await fs.access(SESSIONS_FILE);
   } catch {
@@ -42,7 +40,7 @@ async function initializeDataDir() {
   }
 }
 
-// Helper functions
+// Helper functions for notes
 async function readNotes() {
   try {
     const data = await fs.readFile(NOTES_FILE, 'utf-8');
@@ -87,8 +85,62 @@ function generateId() {
   return crypto.randomBytes(16).toString('hex');
 }
 
+function generateShortId(length = 8) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let id = "";
+  for (let i = 0; i < length; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
+}
+
 function generateSessionToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+// Helper functions for pastebin-like features
+async function noteExists(id) {
+  const notes = await readNotes();
+  return notes.some(note => note.id === id);
+}
+
+async function getNoteById(id) {
+  const notes = await readNotes();
+  return notes.find(note => note.id === id) || null;
+}
+
+async function createEmptyNote(id) {
+  const newNote = {
+    id,
+    title: 'Untitled',
+    content: '',
+    encrypted: false,
+    passwordHash: null,
+    metadata: {},
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    version: 1
+  };
+
+  const notes = await readNotes();
+  notes.push(newNote);
+  return await writeNotes(notes);
+}
+
+async function updateNoteContent(id, content) {
+  const notes = await readNotes();
+  const noteIndex = notes.findIndex(n => n.id === id);
+
+  if (noteIndex === -1) return false;
+
+  notes[noteIndex] = {
+    ...notes[noteIndex],
+    content,
+    updatedAt: new Date().toISOString(),
+    version: (notes[noteIndex].version || 1) + 1
+  };
+
+  return await writeNotes(notes);
 }
 
 // ============================================
@@ -105,47 +157,100 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Get all notes (public/demo mode)
-app.get('/api/notes', async (req, res) => {
-  try {
-    const notes = await readNotes();
-    res.json({ 
-      success: true, 
-      notes,
-      count: notes.length 
-    });
-  } catch (error) {
-    res.status(500).json({ 
+// === PASTEBIN-LIKE FEATURES ===
+
+// Trang chủ → Tự động tạo note mới và redirect
+app.get('/', async (req, res) => {
+  let id;
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  do {
+    id = generateShortId();
+    attempts++;
+    if (attempts > maxAttempts) {
+      return res.status(500).send('Không thể tạo ID mới - thử lại sau');
+    }
+  } while (await noteExists(id));
+
+  await createEmptyNote(id);
+  res.redirect(`/note/${id}`);
+});
+
+// Route editor (phục vụ frontend SPA)
+app.get('/note/:id', async (req, res) => {
+  const id = req.params.id;
+  let note = await getNoteById(id);
+
+  if (!note) {
+    await createEmptyNote(id);
+  }
+
+  const indexPath = path.join(__dirname, 'dist', 'index.html');
+  res.sendFile(indexPath);
+});
+
+// API lưu content nhanh
+app.post('/save/:id', async (req, res) => {
+  const id = req.params.id;
+  const { content } = req.body;
+
+  if (typeof content !== 'string') {
+    return res.status(400).json({ 
       success: false, 
-      error: 'Failed to fetch notes',
-      message: error.message 
+      error: 'Invalid content - must be string' 
     });
+  }
+
+  const updated = await updateNoteContent(id, content);
+
+  if (!updated) {
+    return res.status(404).json({ 
+      success: false, 
+      error: 'Note not found' 
+    });
+  }
+
+  res.json({ success: true });
+});
+
+// API lấy note (hỗ trợ raw text)
+app.get('/api/:id', async (req, res) => {
+  const id = req.params.id;
+  const note = await getNoteById(id);
+
+  if (!note) {
+    return res.status(404).send('❌ Note không tồn tại');
+  }
+
+  if (req.query.raw === 'true') {
+    res.type('text/plain').send(note.content || '');
+  } else {
+    res.json({ success: true, note });
   }
 });
 
-// Get single note by ID
+// === CÁC ROUTES CRUD CŨ ===
+
+// Get all notes
+app.get('/api/notes', async (req, res) => {
+  try {
+    const notes = await readNotes();
+    res.json({ success: true, notes, count: notes.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch notes', message: error.message });
+  }
+});
+
+// Get single note
 app.get('/api/notes/:id', async (req, res) => {
   try {
     const notes = await readNotes();
     const note = notes.find(n => n.id === req.params.id);
-    
-    if (!note) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Note not found' 
-      });
-    }
-
-    res.json({ 
-      success: true, 
-      note 
-    });
+    if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
+    res.json({ success: true, note });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch note',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to fetch note', message: error.message });
   }
 });
 
@@ -168,27 +273,15 @@ app.post('/api/notes', async (req, res) => {
 
     const notes = await readNotes();
     notes.push(newNote);
-    
     const success = await writeNotes(notes);
-    
+
     if (success) {
-      res.status(201).json({ 
-        success: true, 
-        note: newNote,
-        message: 'Note created successfully' 
-      });
+      res.status(201).json({ success: true, note: newNote, message: 'Note created successfully' });
     } else {
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to save note' 
-      });
+      res.status(500).json({ success: false, error: 'Failed to save note' });
     }
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to create note',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to create note', message: error.message });
   }
 });
 
@@ -200,10 +293,7 @@ app.put('/api/notes/:id', async (req, res) => {
     const noteIndex = notes.findIndex(n => n.id === req.params.id);
 
     if (noteIndex === -1) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Note not found' 
-      });
+      return res.status(404).json({ success: false, error: 'Note not found' });
     }
 
     notes[noteIndex] = {
@@ -220,23 +310,12 @@ app.put('/api/notes/:id', async (req, res) => {
     const success = await writeNotes(notes);
 
     if (success) {
-      res.json({ 
-        success: true, 
-        note: notes[noteIndex],
-        message: 'Note updated successfully' 
-      });
+      res.json({ success: true, note: notes[noteIndex], message: 'Note updated successfully' });
     } else {
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to update note' 
-      });
+      res.status(500).json({ success: false, error: 'Failed to update note' });
     }
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to update note',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to update note', message: error.message });
   }
 });
 
@@ -247,72 +326,42 @@ app.delete('/api/notes/:id', async (req, res) => {
     const filteredNotes = notes.filter(n => n.id !== req.params.id);
 
     if (notes.length === filteredNotes.length) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Note not found' 
-      });
+      return res.status(404).json({ success: false, error: 'Note not found' });
     }
 
     const success = await writeNotes(filteredNotes);
 
     if (success) {
-      res.json({ 
-        success: true, 
-        message: 'Note deleted successfully' 
-      });
+      res.json({ success: true, message: 'Note deleted successfully' });
     } else {
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to delete note' 
-      });
+      res.status(500).json({ success: false, error: 'Failed to delete note' });
     }
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to delete note',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to delete note', message: error.message });
   }
 });
 
-// Verify password for encrypted note
+// Verify password
 app.post('/api/notes/:id/verify', async (req, res) => {
   try {
     const { passwordHash } = req.body;
     const notes = await readNotes();
     const note = notes.find(n => n.id === req.params.id);
 
-    if (!note) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Note not found' 
-      });
-    }
-
+    if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
     if (!note.encrypted || !note.passwordHash) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Note is not password protected' 
-      });
+      return res.status(400).json({ success: false, error: 'Note is not password protected' });
     }
 
     const isValid = note.passwordHash === passwordHash;
 
-    res.json({ 
-      success: true, 
-      valid: isValid,
-      note: isValid ? note : null
-    });
+    res.json({ success: true, valid: isValid, note: isValid ? note : null });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to verify password',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to verify password', message: error.message });
   }
 });
 
-// Session management - Create session
+// Session management
 app.post('/api/sessions', async (req, res) => {
   try {
     const { noteId } = req.body;
@@ -322,68 +371,42 @@ app.post('/api/sessions', async (req, res) => {
     sessions[token] = {
       noteId,
       createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
     };
 
     await writeSessions(sessions);
 
-    res.json({ 
-      success: true, 
-      token,
-      expiresAt: sessions[token].expiresAt
-    });
+    res.json({ success: true, token, expiresAt: sessions[token].expiresAt });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to create session',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to create session', message: error.message });
   }
 });
 
-// Validate session
 app.get('/api/sessions/:token', async (req, res) => {
   try {
     const sessions = await readSessions();
     const session = sessions[req.params.token];
 
-    if (!session) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Session not found' 
-      });
-    }
+    if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
 
     const isExpired = new Date(session.expiresAt) < new Date();
 
     if (isExpired) {
       delete sessions[req.params.token];
       await writeSessions(sessions);
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Session expired' 
-      });
+      return res.status(401).json({ success: false, error: 'Session expired' });
     }
 
-    res.json({ 
-      success: true, 
-      session,
-      valid: true
-    });
+    res.json({ success: true, session, valid: true });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to validate session',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to validate session', message: error.message });
   }
 });
 
-// Statistics endpoint
+// Stats, export, import...
 app.get('/api/stats', async (req, res) => {
   try {
     const notes = await readNotes();
-    
     const stats = {
       totalNotes: notes.length,
       encryptedNotes: notes.filter(n => n.encrypted).length,
@@ -393,107 +416,64 @@ app.get('/api/stats', async (req, res) => {
         return sum + words;
       }, 0),
       lastUpdated: notes.length > 0 
-        ? notes.reduce((latest, n) => {
-            return new Date(n.updatedAt) > new Date(latest) ? n.updatedAt : latest;
-          }, notes[0].updatedAt)
+        ? notes.reduce((latest, n) => new Date(n.updatedAt) > new Date(latest) ? n.updatedAt : latest, notes[0].updatedAt)
         : null
     };
 
-    res.json({ 
-      success: true, 
-      stats 
-    });
+    res.json({ success: true, stats });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch statistics',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to fetch statistics', message: error.message });
   }
 });
 
-// Export all notes (backup)
 app.get('/api/export', async (req, res) => {
   try {
     const notes = await readNotes();
-    
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename=anhtu-notes-backup-${Date.now()}.json`);
-    res.json({ 
-      exportedAt: new Date().toISOString(),
-      notesCount: notes.length,
-      notes 
-    });
+    res.json({ exportedAt: new Date().toISOString(), notesCount: notes.length, notes });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to export notes',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to export notes', message: error.message });
   }
 });
 
-// Import notes (restore from backup)
 app.post('/api/import', async (req, res) => {
   try {
     const { notes: importedNotes, merge } = req.body;
-
     if (!Array.isArray(importedNotes)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid notes format' 
-      });
+      return res.status(400).json({ success: false, error: 'Invalid notes format' });
     }
 
     let notes = merge ? await readNotes() : [];
-    
-    // Add imported notes with new IDs if merging
     importedNotes.forEach(note => {
-      const newNote = {
-        ...note,
-        id: merge ? generateId() : note.id,
-        importedAt: new Date().toISOString()
-      };
+      const newNote = { ...note, id: merge ? generateId() : note.id, importedAt: new Date().toISOString() };
       notes.push(newNote);
     });
 
     const success = await writeNotes(notes);
 
     if (success) {
-      res.json({ 
-        success: true, 
-        message: 'Notes imported successfully',
-        count: importedNotes.length,
-        totalNotes: notes.length
-      });
+      res.json({ success: true, message: 'Notes imported successfully', count: importedNotes.length, totalNotes: notes.length });
     } else {
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to import notes' 
-      });
+      res.status(500).json({ success: false, error: 'Failed to import notes' });
     }
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to import notes',
-      message: error.message 
-    });
+    res.status(500).json({ success: false, error: 'Failed to import notes', message: error.message });
   }
 });
 
-// Serve frontend for all other routes (SPA support)
-app.get('*', async (req, res, next) => {
+// Serve frontend for all other routes (SPA fallback)
+app.get('*', async (req, res) => {
   const indexPath = path.join(__dirname, 'dist', 'index.html');
   try {
     await fs.access(indexPath);
     res.sendFile(indexPath);
   } catch {
-    next(); // để error handler xử lý
+    res.status(404).send('Not found');
   }
 });
 
-
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ 
@@ -503,7 +483,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Initialize and start server
+// Start server
 async function startServer() {
   try {
     await initializeDataDir();
@@ -519,16 +499,11 @@ async function startServer() {
 ║  📝 API: http://localhost:${PORT}/api    ║
 ║  💾 Data: ${DATA_DIR}              ║
 ║                                          ║
-║  Endpoints:                              ║
-║  • GET    /api/health                    ║
-║  • GET    /api/notes                     ║
-║  • POST   /api/notes                     ║
-║  • PUT    /api/notes/:id                 ║
-║  • DELETE /api/notes/:id                 ║
-║  • POST   /api/notes/:id/verify          ║
-║  • GET    /api/stats                     ║
-║  • GET    /api/export                    ║
-║  • POST   /api/import                    ║
+║  New Pastebin-like:                      ║
+║  • GET    /           → create & redirect║
+║  • GET    /note/:id   → editor           ║
+║  • POST   /save/:id   → quick save       ║
+║  • GET    /api/:id    → json or raw      ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
       `);
