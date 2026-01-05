@@ -342,20 +342,39 @@ export default function App() {
     toast.success('💾 Đã lưu thành công!');
   };
 
-  const handleExport = () => {
-    if (isLocked) {
-      toast.error('Vui lòng mở khóa trước!');
+  const handleExport = async () => {
+  if (isLocked) {
+    toast.error('Vui lòng mở khóa trước!');
+    return;
+  }
+
+  try {
+    const noteId = window.location.pathname.split('/').pop();
+    const res = await fetch(`/api/${noteId}?raw=true`);
+
+    if (!res.ok) {
+      toast.error('Không thể tải RAW note!');
       return;
     }
-    const blob = new Blob([content], { type: 'text/plain' });
+
+    const text = await res.text();
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
+
     const a = document.createElement('a');
     a.href = url;
-    a.download = `anhtu-note-${new Date().getTime()}.txt`;
+    a.download = `anhtu-note-${noteId}.txt`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
+
     URL.revokeObjectURL(url);
     toast.success('📥 Đã xuất file thành công!');
-  };
+  } catch (err) {
+    console.error(err);
+    toast.error('Lỗi khi export file!');
+  }
+};
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
