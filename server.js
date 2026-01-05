@@ -19,7 +19,7 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Ensure data directory exists
+// Ensure data directory and files exist
 async function initializeDataDir() {
   try {
     await fs.access(DATA_DIR);
@@ -40,7 +40,7 @@ async function initializeDataDir() {
   }
 }
 
-// Helper functions for notes
+// Helper functions for file I/O
 async function readNotes() {
   try {
     const data = await fs.readFile(NOTES_FILE, 'utf-8');
@@ -81,13 +81,14 @@ async function writeSessions(sessions) {
   }
 }
 
+// ID generators
 function generateId() {
   return crypto.randomBytes(16).toString('hex');
 }
 
 function generateShortId(length = 8) {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  let id = "";
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  let id = '';
   for (let i = 0; i < length; i++) {
     id += chars.charAt(Math.floor(Math.random() * chars.length));
   }
@@ -98,7 +99,7 @@ function generateSessionToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-// Helper functions for pastebin-like features
+// Note helpers
 async function noteExists(id) {
   const notes = await readNotes();
   return notes.some(note => note.id === id);
@@ -130,7 +131,6 @@ async function createEmptyNote(id) {
 async function updateNoteContent(id, content) {
   const notes = await readNotes();
   const noteIndex = notes.findIndex(n => n.id === id);
-
   if (noteIndex === -1) return false;
 
   notes[noteIndex] = {
@@ -149,21 +149,21 @@ async function updateNoteContent(id, content) {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     message: 'anhtu 🌈💕 API is running',
     timestamp: new Date().toISOString(),
     version: '1.0.0'
   });
 });
 
-// === PASTEBIN-LIKE FEATURES ===
+// ==================== PASTEBIN-LIKE FEATURES ====================
 
-// Trang chủ → Tự động tạo note mới và redirect
+// Trang chủ → Tạo note mới và redirect
 app.get('/', async (req, res) => {
   let id;
   let attempts = 0;
-  const maxAttempts = 10;
+  const maxAttempts = 20;
 
   do {
     id = generateShortId();
@@ -177,12 +177,11 @@ app.get('/', async (req, res) => {
   res.redirect(`/note/${id}`);
 });
 
-// Route editor (phục vụ frontend SPA)
+// Trang editor (SPA)
 app.get('/note/:id', async (req, res) => {
   const id = req.params.id;
-  let note = await getNoteById(id);
 
-  if (!note) {
+  if (!(await getNoteById(id))) {
     await createEmptyNote(id);
   }
 
@@ -196,25 +195,25 @@ app.post('/save/:id', async (req, res) => {
   const { content } = req.body;
 
   if (typeof content !== 'string') {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Invalid content - must be string' 
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid content - must be string'
     });
   }
 
   const updated = await updateNoteContent(id, content);
 
   if (!updated) {
-    return res.status(404).json({ 
-      success: false, 
-      error: 'Note not found' 
+    return res.status(404).json({
+      success: false,
+      error: 'Note not found'
     });
   }
 
   res.json({ success: true });
 });
 
-// API lấy note (hỗ trợ raw text)
+// API lấy note → /api/:id?raw=true
 app.get('/api/:id', async (req, res) => {
   const id = req.params.id;
   const note = await getNoteById(id);
@@ -230,7 +229,7 @@ app.get('/api/:id', async (req, res) => {
   }
 });
 
-// === CÁC ROUTES CRUD CŨ ===
+// ==================== CRUD API (cũ) ====================
 
 // Get all notes
 app.get('/api/notes', async (req, res) => {
@@ -238,34 +237,29 @@ app.get('/api/notes', async (req, res) => {
     const notes = await readNotes();
     res.json({ success: true, notes, count: notes.length });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to fetch notes', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to fetch notes' });
   }
 });
 
 // Get single note
 app.get('/api/notes/:id', async (req, res) => {
-  try {
-    const notes = await readNotes();
-    const note = notes.find(n => n.id === req.params.id);
-    if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
-    res.json({ success: true, note });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to fetch note', message: error.message });
-  }
+  const note = await getNoteById(req.params.id);
+  if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
+  res.json({ success: true, note });
 });
 
 // Create new note
 app.post('/api/notes', async (req, res) => {
   try {
-    const { content, title, encrypted, passwordHash, metadata } = req.body;
+    const { content = '', title, encrypted = false, passwordHash, metadata = {} } = req.body;
 
     const newNote = {
       id: generateId(),
       title: title || 'Untitled Note',
-      content: content || '',
-      encrypted: encrypted || false,
+      content,
+      encrypted,
       passwordHash: passwordHash || null,
-      metadata: metadata || {},
+      metadata,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       version: 1
@@ -273,15 +267,11 @@ app.post('/api/notes', async (req, res) => {
 
     const notes = await readNotes();
     notes.push(newNote);
-    const success = await writeNotes(notes);
+    await writeNotes(notes);
 
-    if (success) {
-      res.status(201).json({ success: true, note: newNote, message: 'Note created successfully' });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to save note' });
-    }
+    res.status(201).json({ success: true, note: newNote });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to create note', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to create note' });
   }
 });
 
@@ -307,15 +297,10 @@ app.put('/api/notes/:id', async (req, res) => {
       version: notes[noteIndex].version + 1
     };
 
-    const success = await writeNotes(notes);
-
-    if (success) {
-      res.json({ success: true, note: notes[noteIndex], message: 'Note updated successfully' });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to update note' });
-    }
+    await writeNotes(notes);
+    res.json({ success: true, note: notes[noteIndex] });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to update note', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to update note' });
   }
 });
 
@@ -323,21 +308,16 @@ app.put('/api/notes/:id', async (req, res) => {
 app.delete('/api/notes/:id', async (req, res) => {
   try {
     const notes = await readNotes();
-    const filteredNotes = notes.filter(n => n.id !== req.params.id);
+    const filtered = notes.filter(n => n.id !== req.params.id);
 
-    if (notes.length === filteredNotes.length) {
+    if (notes.length === filtered.length) {
       return res.status(404).json({ success: false, error: 'Note not found' });
     }
 
-    const success = await writeNotes(filteredNotes);
-
-    if (success) {
-      res.json({ success: true, message: 'Note deleted successfully' });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to delete note' });
-    }
+    await writeNotes(filtered);
+    res.json({ success: true, message: 'Note deleted successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to delete note', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to delete note' });
   }
 });
 
@@ -345,8 +325,7 @@ app.delete('/api/notes/:id', async (req, res) => {
 app.post('/api/notes/:id/verify', async (req, res) => {
   try {
     const { passwordHash } = req.body;
-    const notes = await readNotes();
-    const note = notes.find(n => n.id === req.params.id);
+    const note = await getNoteById(req.params.id);
 
     if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
     if (!note.encrypted || !note.passwordHash) {
@@ -354,10 +333,9 @@ app.post('/api/notes/:id/verify', async (req, res) => {
     }
 
     const isValid = note.passwordHash === passwordHash;
-
     res.json({ success: true, valid: isValid, note: isValid ? note : null });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to verify password', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to verify password' });
   }
 });
 
@@ -375,10 +353,9 @@ app.post('/api/sessions', async (req, res) => {
     };
 
     await writeSessions(sessions);
-
     res.json({ success: true, token, expiresAt: sessions[token].expiresAt });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to create session', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to create session' });
   }
 });
 
@@ -390,7 +367,6 @@ app.get('/api/sessions/:token', async (req, res) => {
     if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
 
     const isExpired = new Date(session.expiresAt) < new Date();
-
     if (isExpired) {
       delete sessions[req.params.token];
       await writeSessions(sessions);
@@ -399,11 +375,11 @@ app.get('/api/sessions/:token', async (req, res) => {
 
     res.json({ success: true, session, valid: true });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to validate session', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to validate session' });
   }
 });
 
-// Stats, export, import...
+// Stats
 app.get('/api/stats', async (req, res) => {
   try {
     const notes = await readNotes();
@@ -415,17 +391,18 @@ app.get('/api/stats', async (req, res) => {
         const words = n.content?.trim().split(/\s+/).filter(w => w.length > 0).length || 0;
         return sum + words;
       }, 0),
-      lastUpdated: notes.length > 0 
+      lastUpdated: notes.length > 0
         ? notes.reduce((latest, n) => new Date(n.updatedAt) > new Date(latest) ? n.updatedAt : latest, notes[0].updatedAt)
         : null
     };
 
     res.json({ success: true, stats });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to fetch statistics', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to fetch statistics' });
   }
 });
 
+// Export & Import
 app.get('/api/export', async (req, res) => {
   try {
     const notes = await readNotes();
@@ -433,36 +410,31 @@ app.get('/api/export', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=anhtu-notes-backup-${Date.now()}.json`);
     res.json({ exportedAt: new Date().toISOString(), notesCount: notes.length, notes });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to export notes', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to export notes' });
   }
 });
 
 app.post('/api/import', async (req, res) => {
   try {
-    const { notes: importedNotes, merge } = req.body;
+    const { notes: importedNotes, merge = true } = req.body;
     if (!Array.isArray(importedNotes)) {
       return res.status(400).json({ success: false, error: 'Invalid notes format' });
     }
 
     let notes = merge ? await readNotes() : [];
     importedNotes.forEach(note => {
-      const newNote = { ...note, id: merge ? generateId() : note.id, importedAt: new Date().toISOString() };
-      notes.push(newNote);
+      const newId = merge ? generateId() : (note.id || generateId());
+      notes.push({ ...note, id: newId, importedAt: new Date().toISOString() });
     });
 
-    const success = await writeNotes(notes);
-
-    if (success) {
-      res.json({ success: true, message: 'Notes imported successfully', count: importedNotes.length, totalNotes: notes.length });
-    } else {
-      res.status(500).json({ success: false, error: 'Failed to import notes' });
-    }
+    await writeNotes(notes);
+    res.json({ success: true, message: 'Notes imported successfully', count: importedNotes.length, totalNotes: notes.length });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to import notes', message: error.message });
+    res.status(500).json({ success: false, error: 'Failed to import notes' });
   }
 });
 
-// Serve frontend for all other routes (SPA fallback)
+// SPA fallback - tất cả các route khác trả về index.html
 app.get('*', async (req, res) => {
   const indexPath = path.join(__dirname, 'dist', 'index.html');
   try {
@@ -473,11 +445,11 @@ app.get('*', async (req, res) => {
   }
 });
 
-// Error handling
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
-  res.status(500).json({ 
-    success: false, 
+  res.status(500).json({
+    success: false,
     error: 'Internal server error',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
   });
@@ -487,7 +459,7 @@ app.use((err, req, res, next) => {
 async function startServer() {
   try {
     await initializeDataDir();
-    
+
     app.listen(PORT, () => {
       console.log(`
 ╔══════════════════════════════════════════╗
@@ -495,15 +467,15 @@ async function startServer() {
 ║       🌈 anhtu 💕 API Server            ║
 ║                                          ║
 ║  ✨ Status: Running                      ║
-║  🚀 Port: ${PORT}                         ║
-║  📝 API: http://localhost:${PORT}/api    ║
-║  💾 Data: ${DATA_DIR}              ║
+║  🚀 Port: ${PORT}                              ║
+║  📝 API: http://localhost:${PORT}/api         ║
+║  💾 Data: ${DATA_DIR}                   ║
 ║                                          ║
-║  New Pastebin-like:                      ║
-║  • GET    /           → create & redirect║
-║  • GET    /note/:id   → editor           ║
-║  • POST   /save/:id   → quick save       ║
-║  • GET    /api/:id    → json or raw      ║
+║  Pastebin-like routes:                   ║
+║  • GET  /                    → tạo mới & redirect    ║
+║  • GET  /note/:id            → editor               ║
+║  • POST /save/:id            → lưu nhanh            ║
+║  • GET  /api/:id?raw=true    → raw text             ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
       `);
@@ -516,12 +488,12 @@ async function startServer() {
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
+  console.log('SIGTERM received, shutting down...');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('\nSIGINT received, shutting down gracefully...');
+  console.log('\nSIGINT received, shutting down...');
   process.exit(0);
 });
 
