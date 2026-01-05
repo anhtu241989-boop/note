@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
 const DATA_DIR = path.join(__dirname, 'data');
 const NOTES_FILE = path.join(DATA_DIR, 'notes.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
@@ -26,13 +27,11 @@ async function initializeDataDir() {
   } catch {
     await fs.mkdir(DATA_DIR, { recursive: true });
   }
-
   try {
     await fs.access(NOTES_FILE);
   } catch {
     await fs.writeFile(NOTES_FILE, JSON.stringify([], null, 2));
   }
-
   try {
     await fs.access(SESSIONS_FILE);
   } catch {
@@ -122,7 +121,6 @@ async function createEmptyNote(id) {
     updatedAt: new Date().toISOString(),
     version: 1
   };
-
   const notes = await readNotes();
   notes.push(newNote);
   return await writeNotes(notes);
@@ -132,14 +130,12 @@ async function updateNoteContent(id, content) {
   const notes = await readNotes();
   const noteIndex = notes.findIndex(n => n.id === id);
   if (noteIndex === -1) return false;
-
   notes[noteIndex] = {
     ...notes[noteIndex],
     content,
     updatedAt: new Date().toISOString(),
     version: (notes[noteIndex].version || 1) + 1
   };
-
   return await writeNotes(notes);
 }
 
@@ -164,7 +160,6 @@ app.get('/', async (req, res) => {
   let id;
   let attempts = 0;
   const maxAttempts = 20;
-
   do {
     id = generateShortId();
     attempts++;
@@ -172,7 +167,6 @@ app.get('/', async (req, res) => {
       return res.status(500).send('Không thể tạo ID mới - thử lại sau');
     }
   } while (await noteExists(id));
-
   await createEmptyNote(id);
   res.redirect(`/note/${id}`);
 });
@@ -180,11 +174,9 @@ app.get('/', async (req, res) => {
 // Trang editor (SPA)
 app.get('/note/:id', async (req, res) => {
   const id = req.params.id;
-
   if (!(await getNoteById(id))) {
     await createEmptyNote(id);
   }
-
   const indexPath = path.join(__dirname, 'dist', 'index.html');
   res.sendFile(indexPath);
 });
@@ -193,23 +185,19 @@ app.get('/note/:id', async (req, res) => {
 app.post('/save/:id', async (req, res) => {
   const id = req.params.id;
   const { content } = req.body;
-
   if (typeof content !== 'string') {
     return res.status(400).json({
       success: false,
       error: 'Invalid content - must be string'
     });
   }
-
   const updated = await updateNoteContent(id, content);
-
   if (!updated) {
     return res.status(404).json({
       success: false,
       error: 'Note not found'
     });
   }
-
   res.json({ success: true });
 });
 
@@ -217,16 +205,30 @@ app.post('/save/:id', async (req, res) => {
 app.get('/api/:id', async (req, res) => {
   const id = req.params.id;
   const note = await getNoteById(id);
-
   if (!note) {
     return res.status(404).send('❌ Note không tồn tại');
   }
-
   if (req.query.raw === 'true') {
     res.type('text/plain').send(note.content || '');
   } else {
     res.json({ success: true, note });
   }
+});
+
+// 🔴 THÊM MỚI: API kiểu cũ (tương thích với Syntax Note gốc)
+// GET /api/note/:id → trả về { id, content }
+app.get('/api/note/:id', async (req, res) => {
+  const id = req.params.id;
+  const note = await getNoteById(id);
+
+  if (!note) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  res.json({
+    id,
+    content: note.content || ''
+  });
 });
 
 // ==================== CRUD API (cũ) ====================
@@ -252,7 +254,6 @@ app.get('/api/notes/:id', async (req, res) => {
 app.post('/api/notes', async (req, res) => {
   try {
     const { content = '', title, encrypted = false, passwordHash, metadata = {} } = req.body;
-
     const newNote = {
       id: generateId(),
       title: title || 'Untitled Note',
@@ -264,11 +265,9 @@ app.post('/api/notes', async (req, res) => {
       updatedAt: new Date().toISOString(),
       version: 1
     };
-
     const notes = await readNotes();
     notes.push(newNote);
     await writeNotes(notes);
-
     res.status(201).json({ success: true, note: newNote });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to create note' });
@@ -281,11 +280,9 @@ app.put('/api/notes/:id', async (req, res) => {
     const { content, title, encrypted, passwordHash, metadata } = req.body;
     const notes = await readNotes();
     const noteIndex = notes.findIndex(n => n.id === req.params.id);
-
     if (noteIndex === -1) {
       return res.status(404).json({ success: false, error: 'Note not found' });
     }
-
     notes[noteIndex] = {
       ...notes[noteIndex],
       title: title !== undefined ? title : notes[noteIndex].title,
@@ -296,7 +293,6 @@ app.put('/api/notes/:id', async (req, res) => {
       updatedAt: new Date().toISOString(),
       version: notes[noteIndex].version + 1
     };
-
     await writeNotes(notes);
     res.json({ success: true, note: notes[noteIndex] });
   } catch (error) {
@@ -309,11 +305,9 @@ app.delete('/api/notes/:id', async (req, res) => {
   try {
     const notes = await readNotes();
     const filtered = notes.filter(n => n.id !== req.params.id);
-
     if (notes.length === filtered.length) {
       return res.status(404).json({ success: false, error: 'Note not found' });
     }
-
     await writeNotes(filtered);
     res.json({ success: true, message: 'Note deleted successfully' });
   } catch (error) {
@@ -326,12 +320,10 @@ app.post('/api/notes/:id/verify', async (req, res) => {
   try {
     const { passwordHash } = req.body;
     const note = await getNoteById(req.params.id);
-
     if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
     if (!note.encrypted || !note.passwordHash) {
       return res.status(400).json({ success: false, error: 'Note is not password protected' });
     }
-
     const isValid = note.passwordHash === passwordHash;
     res.json({ success: true, valid: isValid, note: isValid ? note : null });
   } catch (error) {
@@ -345,13 +337,11 @@ app.post('/api/sessions', async (req, res) => {
     const { noteId } = req.body;
     const token = generateSessionToken();
     const sessions = await readSessions();
-
     sessions[token] = {
       noteId,
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
     };
-
     await writeSessions(sessions);
     res.json({ success: true, token, expiresAt: sessions[token].expiresAt });
   } catch (error) {
@@ -363,16 +353,13 @@ app.get('/api/sessions/:token', async (req, res) => {
   try {
     const sessions = await readSessions();
     const session = sessions[req.params.token];
-
     if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
-
     const isExpired = new Date(session.expiresAt) < new Date();
     if (isExpired) {
       delete sessions[req.params.token];
       await writeSessions(sessions);
       return res.status(401).json({ success: false, error: 'Session expired' });
     }
-
     res.json({ success: true, session, valid: true });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to validate session' });
@@ -395,7 +382,6 @@ app.get('/api/stats', async (req, res) => {
         ? notes.reduce((latest, n) => new Date(n.updatedAt) > new Date(latest) ? n.updatedAt : latest, notes[0].updatedAt)
         : null
     };
-
     res.json({ success: true, stats });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch statistics' });
@@ -420,13 +406,11 @@ app.post('/api/import', async (req, res) => {
     if (!Array.isArray(importedNotes)) {
       return res.status(400).json({ success: false, error: 'Invalid notes format' });
     }
-
     let notes = merge ? await readNotes() : [];
     importedNotes.forEach(note => {
       const newId = merge ? generateId() : (note.id || generateId());
       notes.push({ ...note, id: newId, importedAt: new Date().toISOString() });
     });
-
     await writeNotes(notes);
     res.json({ success: true, message: 'Notes imported successfully', count: importedNotes.length, totalNotes: notes.length });
   } catch (error) {
@@ -459,23 +443,23 @@ app.use((err, req, res, next) => {
 async function startServer() {
   try {
     await initializeDataDir();
-
     app.listen(PORT, () => {
       console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
-║       🌈 anhtu 💕 API Server            ║
+║   🌈 anhtu 💕 API Server                  ║
 ║                                          ║
-║  ✨ Status: Running                      ║
-║  🚀 Port: ${PORT}                              ║
-║  📝 API: http://localhost:${PORT}/api         ║
-║  💾 Data: ${DATA_DIR}                   ║
+║   ✨ Status: Running                      ║
+║   🚀 Port: ${PORT}                              ║
+║   📝 API: http://localhost:${PORT}/api          ║
+║   💾 Data: ${DATA_DIR}                     ║
 ║                                          ║
-║  Pastebin-like routes:                   ║
-║  • GET  /                    → tạo mới & redirect    ║
-║  • GET  /note/:id            → editor               ║
-║  • POST /save/:id            → lưu nhanh            ║
-║  • GET  /api/:id?raw=true    → raw text             ║
+║   Pastebin-like routes:                   ║
+║   • GET / → tạo mới & redirect           ║
+║   • GET /note/:id → editor               ║
+║   • POST /save/:id → lưu nhanh           ║
+║   • GET /api/:id?raw=true → raw text     ║
+║   • GET /api/note/:id → {id, content}    ║ ← NEW!
 ║                                          ║
 ╚══════════════════════════════════════════╝
       `);
